@@ -1229,14 +1229,14 @@ class AccountService:
             return True
         return False
 
-    def _record_invalid_token_seen(self, access_token: str, event: str, error: str) -> bool:
+    def _record_invalid_token_seen(self, access_token: str, event: str, error: str, *, force: bool = False) -> bool:
         now = datetime.now(timezone.utc)
         with self._lock:
             access_token = self._resolve_access_token_locked(access_token)
             current = self._accounts.get(access_token)
             if current is None:
                 return True
-            should_defer = self._should_defer_invalid_token(current, now)
+            should_defer = False if force else self._should_defer_invalid_token(current, now)
             next_item = dict(current)
             next_item["invalid_count"] = int(next_item.get("invalid_count") or 0) + 1
             next_item["last_invalid_at"] = now.isoformat()
@@ -1296,6 +1296,7 @@ class AccountService:
             raise ValueError("access_token is required")
 
         active_token = self.refresh_access_token(access_token, event=f"{event}:preflight") or access_token
+        force_invalid_status = event == "refresh_accounts"
         try:
             from services.openai_backend_api import InvalidAccessTokenError, OpenAIBackendAPI
             result = OpenAIBackendAPI(active_token).get_user_info()
@@ -1305,12 +1306,12 @@ class AccountService:
                 try:
                     result = OpenAIBackendAPI(refreshed_token).get_user_info()
                 except InvalidAccessTokenError as retry_exc:
-                    if self._record_invalid_token_seen(refreshed_token, event, str(retry_exc)):
+                    if self._record_invalid_token_seen(refreshed_token, event, str(retry_exc), force=force_invalid_status):
                         self.remove_invalid_token(refreshed_token, event)
                     raise
                 active_token = refreshed_token
             else:
-                if self._record_invalid_token_seen(active_token, event, str(exc)):
+                if self._record_invalid_token_seen(active_token, event, str(exc), force=force_invalid_status):
                     self.remove_invalid_token(active_token, event)
                 raise
         self._record_refresh_success(active_token)
