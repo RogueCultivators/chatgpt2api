@@ -1033,7 +1033,7 @@ class AccountService:
             self._save_accounts()
 
     def remove_invalid_token(self, access_token: str, event: str, quiet: bool = False) -> bool:
-        if not config.auto_remove_invalid_accounts:
+        if event == "refresh_accounts" or not config.auto_remove_invalid_accounts:
             self.update_account(access_token, {"status": "异常", "quota": 0}, quiet=quiet)
             return False
         removed = bool(self.delete_accounts([access_token])["removed"])
@@ -1242,6 +1242,9 @@ class AccountService:
             next_item["last_invalid_at"] = now.isoformat()
             next_item["last_refresh_error"] = str(error or "invalid access token")
             next_item["last_refresh_error_at"] = now.isoformat()
+            if force:
+                next_item["status"] = "异常"
+                next_item["quota"] = 0
             account = self._normalize_account(next_item)
             if account is not None:
                 self._accounts[access_token] = account
@@ -1254,6 +1257,23 @@ class AccountService:
                 )
                 return False
         return True
+
+    @staticmethod
+    def _looks_like_invalid_access_token_error(error: object) -> bool:
+        raw = str(error or "").strip().lower()
+        if not raw:
+            return False
+        invalid_markers = (
+            "token invalidated",
+            "invalid access token",
+            "access token is invalid",
+            "http 401",
+            "status_code=401",
+            "status code 401",
+            "401 unauthorized",
+            "unauthorized (401",
+        )
+        return any(marker in raw for marker in invalid_markers)
 
     def mark_image_result(self, access_token: str, success: bool) -> dict | None:
         if not access_token:
@@ -1314,6 +1334,12 @@ class AccountService:
                 if self._record_invalid_token_seen(active_token, event, str(exc), force=force_invalid_status):
                     self.remove_invalid_token(active_token, event)
                 raise
+        except Exception as exc:
+            error_str = str(exc)
+            if self._looks_like_invalid_access_token_error(error_str):
+                if self._record_invalid_token_seen(active_token, event, error_str, force=force_invalid_status):
+                    self.remove_invalid_token(active_token, event)
+            raise
         self._record_refresh_success(active_token)
         return self.update_account(active_token, result)
 

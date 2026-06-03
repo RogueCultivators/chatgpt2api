@@ -78,6 +78,92 @@ class AccountRefreshTests(unittest.TestCase):
         self.assertEqual(account["invalid_count"], 1)
         self.assertIn("token invalidated", account["last_refresh_error"])
 
+    def test_refresh_accounts_marks_generic_http_401_abnormal(self) -> None:
+        service = AccountService(
+            MemoryStorage(
+                [
+                    {
+                        "access_token": "token-generic-401",
+                        "status": "正常",
+                        "quota": 9,
+                        "created_at": "2020-01-01 00:00:00",
+                    }
+                ]
+            )
+        )
+
+        class GenericUnauthorizedBackend:
+            def __init__(self, access_token: str) -> None:
+                self.access_token = access_token
+
+            def get_user_info(self) -> dict[str, Any]:
+                raise RuntimeError("/backend-api/me failed: HTTP 401")
+
+        old_backend = openai_backend_api.OpenAIBackendAPI
+        old_auto_remove = config.data.get("auto_remove_invalid_accounts")
+        openai_backend_api.OpenAIBackendAPI = GenericUnauthorizedBackend
+        config.data["auto_remove_invalid_accounts"] = False
+        try:
+            result = service.refresh_accounts(["token-generic-401"])
+        finally:
+            openai_backend_api.OpenAIBackendAPI = old_backend
+            if old_auto_remove is None:
+                config.data.pop("auto_remove_invalid_accounts", None)
+            else:
+                config.data["auto_remove_invalid_accounts"] = old_auto_remove
+
+        account = service.get_account("token-generic-401")
+        self.assertEqual(result["refreshed"], 0)
+        self.assertEqual(len(result["errors"]), 1)
+        self.assertIsNotNone(account)
+        self.assertEqual(account["status"], "异常")
+        self.assertEqual(account["quota"], 0)
+        self.assertEqual(account["invalid_count"], 1)
+        self.assertIn("HTTP 401", account["last_refresh_error"])
+
+    def test_refresh_accounts_keeps_401_account_when_auto_remove_is_enabled(self) -> None:
+        service = AccountService(
+            MemoryStorage(
+                [
+                    {
+                        "access_token": "token-auto-remove-401",
+                        "status": "正常",
+                        "quota": 5,
+                        "created_at": "2020-01-01 00:00:00",
+                    }
+                ]
+            )
+        )
+
+        class UnauthorizedBackend:
+            def __init__(self, access_token: str) -> None:
+                self.access_token = access_token
+
+            def get_user_info(self) -> dict[str, Any]:
+                raise openai_backend_api.InvalidAccessTokenError("token invalidated (/backend-api/me)")
+
+        old_backend = openai_backend_api.OpenAIBackendAPI
+        old_auto_remove = config.data.get("auto_remove_invalid_accounts")
+        openai_backend_api.OpenAIBackendAPI = UnauthorizedBackend
+        config.data["auto_remove_invalid_accounts"] = True
+        try:
+            result = service.refresh_accounts(["token-auto-remove-401"])
+        finally:
+            openai_backend_api.OpenAIBackendAPI = old_backend
+            if old_auto_remove is None:
+                config.data.pop("auto_remove_invalid_accounts", None)
+            else:
+                config.data["auto_remove_invalid_accounts"] = old_auto_remove
+
+        account = service.get_account("token-auto-remove-401")
+        self.assertEqual(result["refreshed"], 0)
+        self.assertEqual(len(result["errors"]), 1)
+        self.assertEqual(len(result["items"]), 1)
+        self.assertIsNotNone(account)
+        self.assertEqual(account["status"], "异常")
+        self.assertEqual(account["quota"], 0)
+        self.assertEqual(account["invalid_count"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()
